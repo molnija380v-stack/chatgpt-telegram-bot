@@ -1,47 +1,27 @@
-import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from openai_helper import OpenAIHelper, are_functions_available
 import os
-from dotenv import load_dotenv
+from telegram.ext import Application, CommandHandler
 
-# Загружаем .env
-load_dotenv()
-
-# Логирование
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-
-logger = logging.getLogger(__name__)
-
-# Инициализация OpenAIHelper
-openai_helper = OpenAIHelper()
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+PORT = int(os.environ.get("PORT", 8443))  # Render сам даёт PORT
 
 # Команда /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Привет! Я ChatGPT бот 🚀")
+async def start(update, context):
+    await update.message.reply_text("Бот запущен и работает через Render 🚀")
 
-# Ответ на сообщения
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_message = update.message.text
-    response = openai_helper.get_chat_response(user_message)
-    await update.message.reply_text(response)
+def main():
+    # Создаём приложение
+    app = Application.builder().token(TOKEN).build()
 
-def main() -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        logger.error("TELEGRAM_BOT_TOKEN не найден в .env")
-        return
-
-    app = Application.builder().token(token).build()
-
+    # Хэндлеры
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Бот запущен...")
-    app.run_polling()
+    # Включаем webhook вместо polling
+    app.run_webhook(
+        listen="0.0.0.0",               # слушаем все адреса
+        port=PORT,                      # порт от Render
+        url_path=TOKEN,                 # секретный путь = токен
+        webhook_url=f"https://{os.environ['RENDER_EXTERNAL_HOSTNAME']}/{TOKEN}"
+    )
 
 if __name__ == "__main__":
     main()
