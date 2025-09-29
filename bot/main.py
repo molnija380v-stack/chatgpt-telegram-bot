@@ -1,96 +1,108 @@
 import os
-import random
 import asyncio
-from datetime import datetime, timedelta
-from telegram.ext import Application
+import nest_asyncio
+from datetime import datetime
+from telegram import Bot
+from telegram.ext import Application, CommandHandler
 from openai import OpenAI
 
-# Переменные окружения
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("1002971665440")  # ID канала (например -1001234567890)
+# Чтобы Render не ругался на event loop
+nest_asyncio.apply()
+
+# === Переменные окружения ===
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# === Айди канала (фиксированный) ===
+CHANNEL_ID = -1002971665440
+
+# === Telegram и OpenAI клиенты ===
+application = Application.builder().token(BOT_TOKEN).build()
+bot = Bot(token=BOT_TOKEN)
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 
-async def generate_post():
-    """Генерация текста поста через GPT"""
-    styles = [
-        "Сделай короткий пост про серые схемы заработка через ИИ, добавь эмодзи.",
-        "Придумай полезный лайфхак: как использовать ChatGPT для автоматизации дохода.",
-        "Напиши пост с лёгким юмором про заработок с помощью ИИ.",
-        "Составь мини-инструкцию, как можно зарабатывать, используя MidJourney или DALL·E.",
-        "Напиши вопрос к подписчикам, связанный с ИИ и заработком."
-    ]
-
-    prompt = random.choice(styles)
-
+# ======= Генерация текста =======
+async def generate_text():
+    prompt = (
+        "Сделай короткий пост для Telegram-канала о бело-серых схемах заработка "
+        "и автоматизации через ИИ. Максимум 2 предложения. Стиль — лаконичный, "
+        "с элементом мотивации. Добавь 1 эмодзи в тему."
+    )
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=350
+        max_tokens=80,
     )
-
     return response.choices[0].message.content.strip()
 
 
+# ======= Генерация картинки =======
 async def generate_image():
-    """Генерация картинки через DALL·E"""
-    prompts = [
-        "Futuristic AI hacking style illustration, cyberpunk theme",
-        "Minimalistic infographic style about making money with AI",
-        "Funny meme-style illustration about AI and money",
-        "Stylized image of robot businessman earning online",
-    ]
-
-    prompt = random.choice(prompts)
-
-    response = client.images.generate(
-        model="gpt-image-1",
-        prompt=prompt,
-        size="1024x1024"
-    )
-
-    return response.data[0].url
+    try:
+        response = client.images.generate(
+            model="gpt-image-1",
+            prompt="Абстрактная иллюстрация заработка с помощью ИИ, минимализм, современный стиль, с серо-белой палитрой",
+            size="1024x1024"
+        )
+        return response.data[0].url
+    except Exception as e:
+        print(f"Ошибка генерации картинки: {e}")
+        return None
 
 
-async def post_task(app):
-    """Фоновая задача: автопостинг"""
+# ======= Автопостинг =======
+async def autopost():
     while True:
-        # выбираем время (12:00 или 18:00 ± рандомные минуты)
-        hours = [12, 18]
-        target_hour = random.choice(hours)
-        target_minute = random.randint(0, 20)
+        try:
+            text = await generate_text()
+            image = await generate_image()
 
-        now = datetime.now()
-        target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+            if image:
+                await bot.send_photo(chat_id=CHANNEL_ID, photo=image, caption=text)
+            else:
+                await bot.send_message(chat_id=CHANNEL_ID, text=text)
 
-        if target < now:
-            target += timedelta(days=1)
+            print(f"[{datetime.now()}] Автопостинг отправлен")
+        except Exception as e:
+            print(f"Ошибка при автопостинге: {e}")
 
-        wait_time = (target - now).total_seconds()
-        print(f"Следующий пост через {wait_time/60:.1f} минут")
-        await asyncio.sleep(wait_time)
+        # Интервал: каждые 3 часа
+        await asyncio.sleep(3 * 60 * 60)
 
-        # генерируем текст поста
-        post_text = await generate_post()
 
-        # случайно решаем — текст или текст + картинка
-        if random.random() < 0.3:  # примерно 30% постов будут с картинкой
-            image_url = await generate_image()
-            await app.bot.send_photo(chat_id=CHAT_ID, photo=image_url, caption=post_text)
+# ======= Команды =======
+async def start(update, context):
+    await update.message.reply_text("✅ Бот запущен и готов постить!")
+
+
+async def post(update, context):
+    """Принудительный пост по команде /post"""
+    try:
+        text = await generate_text()
+        image = await generate_image()
+
+        if image:
+            await bot.send_photo(chat_id=CHANNEL_ID, photo=image, caption=text)
         else:
-            await app.bot.send_message(chat_id=CHAT_ID, text=post_text)
+            await bot.send_message(chat_id=CHANNEL_ID, text=text)
+
+        await update.message.reply_text("📨 Пост отправлен в канал!")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
 
 
+# ======= Основной запуск =======
 async def main():
-    app = Application.builder().token(TOKEN).build()
+    # Команды
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("post", post))
 
-    # запускаем фоновую задачу
-    asyncio.create_task(post_task(app))
+    # Автопостинг параллельно
+    asyncio.create_task(autopost())
 
-    # чтобы Render держал процесс живым
-    await app.run_polling()
+    # Запуск
+    await application.run_polling()
 
 
 if __name__ == "__main__":
